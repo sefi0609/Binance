@@ -174,6 +174,7 @@ def buy_missing_whitelist_coins(balances):
             print(f"❌ Could not place limit buy for {symbol}: {e}")
 
 if __name__ == "__main__":
+
     # cancel all open orders
     cancel_all_orders()
     # get coins balances
