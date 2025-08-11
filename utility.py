@@ -1,7 +1,3 @@
-import time
-import hmac
-import hashlib
-import requests
 from binance.enums import *
 from decimal import Decimal, ROUND_DOWN
 from config import *
