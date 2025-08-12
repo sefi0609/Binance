@@ -12,9 +12,13 @@ async def handle_message(msg, client) -> None:
         old_balance = await get_balance_for_coin(client, asset)
         await buy_coin(symbol, client)
 
-        # wait for balance to change
-        new_balance = await wait_for_new_balance(client, asset, old_balance)
-        await create_oco_order(new_balance, symbol, client)
+        try:
+            # wait for balance to change
+            new_balance = await wait_for_new_balance(client, asset, old_balance)
+            await create_oco_order(new_balance, symbol, client)
+        except TimeoutError as e:
+            print(e)
+            print('Continuing The Script...')
     else:
         print('Not a Sell order, not action needed')
         return
@@ -26,7 +30,7 @@ async def get_balance_for_coin(client, asset: str) -> float:
     balance = await client.get_asset_balance(asset)
     return float(balance['free'])
 
-async def wait_for_new_balance(client, asset, old_balance, timeout=30) -> float:
+async def wait_for_new_balance(client, asset: str, old_balance: float, timeout=300) -> float:
     """
     Waits for the balance of a specific asset to change.
     """
@@ -40,34 +44,6 @@ async def wait_for_new_balance(client, asset, old_balance, timeout=30) -> float:
 
     raise TimeoutError(f"❌ Timed out waiting for balance of {asset} to update.")
 
-# async def get_balances(client) -> list:
-#     print('Owned Coins Balances:')
-#     account_info = await client.get_account()
-#     balances = account_info['balances']
-#
-#     # Only show coins with nonzero balance
-#     nonzero = [b for b in balances if float(b['free']) > 0 or float(b['locked']) > 0]
-#
-#     for b in nonzero:
-#         print(f"{b['asset']}: Free={b['free']}, Locked={b['locked']}")
-#
-#     return nonzero
-
-# async def cancel_order(symbol: str, client) -> None:
-#     print(f'Canceled orders For Coin: {symbol}')
-#     open_orders = await client.get_open_orders(symbol=symbol)
-#
-#     if not open_orders:
-#         print('No open orders...')
-#         return
-#
-#     for order in open_orders:
-#         try:
-#             await client.cancel_order(symbol=symbol, orderId=order["orderId"])
-#             print(f"✅ Canceled order {order['orderId']} for {symbol}")
-#         except Exception as e:
-#             print(f"❌ Could not cancel {symbol} order {order['orderId']}: {e}")
-
 async def get_price_filter(symbol: str, client) -> tuple:
     info = await client.get_symbol_info(symbol)
     for f in info['filters']:
@@ -75,7 +51,7 @@ async def get_price_filter(symbol: str, client) -> tuple:
             return f['tickSize'], f['minPrice']
     return None, None
 
-def round_price(price: float, tick_size) -> Decimal:
+def round_price(price: float, tick_size: float) -> Decimal:
     tick_size = Decimal(tick_size)
     price = Decimal(str(price))
     rounded = (price // tick_size) * tick_size
@@ -94,7 +70,8 @@ def round_quantity(qty: float, step_size_str: float) -> Decimal:
     rounded = (qty // step_size) * step_size
     return rounded.quantize(step_size, rounding=ROUND_DOWN)
 
-async def create_oco_order(new_balance, symbol: str, client, take_profit=2, drop_percent=2, limit_offset_percent=0.1) -> None:
+async def create_oco_order(new_balance: float, symbol: str, client,
+                           take_profit=2, drop_percent=2, limit_offset_percent=0.1) -> None:
     """
     Places STOP-LOSS-LIMIT sell orders for all assets.
 
@@ -168,7 +145,7 @@ async def create_oco_order(new_balance, symbol: str, client, take_profit=2, drop
     except Exception as e:
         print(f"❌ Could not place stop-limit order for {symbol}: {e}")
 
-async def buy_coin(symbol: str, client):
+async def buy_coin(symbol: str, client) -> None:
     """
     Places limit buy orders for any coins on a predefined whitelist that the user does not currently own.
     It uses a portion of the available USDT to purchase each missing coin, ensuring the purchase
