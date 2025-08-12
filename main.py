@@ -1,20 +1,18 @@
 from utility import *
-from binance.client import Client
+from config import *
+from binance import AsyncClient, BinanceSocketManager
 
-def main():
-    # connect to binance
-    client = Client(API_KEY, API_SECRET)
-    # cancel existing orders
-    cancel_all_orders(client)
-    # get coins balances
-    balances = get_balances(client)
-    # buying missing coins from whitelist
-    get_new_balances = buy_missing_whitelist_coins(balances, client)
-    # get coins balances after buying whitelist coins
-    if get_new_balances:
-        balances = get_balances(client)
-    # create oco orders (TP + SL)
-    create_oco_stop_market_orders(balances, client)
+async def main():
+    client = await AsyncClient.create(api_key=API_KEY, api_secret=API_SECRET)
+    try:
+        bsm = BinanceSocketManager(client)
+        print('Waiting for orders...')
+        async with bsm.user_socket() as stream:
+            while True:
+                msg = await stream.recv()
+                await handle_message(msg, client)
+    finally:
+        await client.close_connection()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

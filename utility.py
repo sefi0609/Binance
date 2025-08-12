@@ -1,51 +1,88 @@
 from binance.enums import *
 from decimal import Decimal, ROUND_DOWN
-from config import *
+import asyncio
 
-def get_balances(client) -> list:
-    print('Owned Coins Balances:')
-    account_info = client.get_account()
-    balances = account_info['balances']
+# entry point from main script
+async def handle_message(msg, client) -> None:
+    if msg.get("e") == "executionReport" and msg.get("S") == "SELL" and msg.get("X") == "FILLED":
+        symbol = msg.get("s")
+        asset = symbol.replace('USDT', '')
+        print(f"Sell detected for {symbol} – triggering re-buy logic")
 
-    # Only show coins with nonzero balance
-    nonzero = [b for b in balances if float(b['free']) > 0 or float(b['locked']) > 0]
+        old_balance = await get_balance_for_coin(client, asset)
+        await buy_coin(symbol, client)
 
-    for b in nonzero:
-        print(f"{b['asset']}: Free={b['free']}, Locked={b['locked']}")
-
-    return nonzero
-
-def cancel_all_orders(client) -> None:
-    print('Canceled all orders:')
-    open_orders = client.get_open_orders()
-
-    if not open_orders:
-        print('No open orders...')
+        # wait for balance to change
+        new_balance = await wait_for_new_balance(client, asset, old_balance)
+        await create_oco_order(new_balance, symbol, client)
+    else:
+        print('Not a Sell order, not action needed')
         return
 
-    for order in open_orders:
-        symbol = order["symbol"]
-        try:
-            client.cancel_order(symbol=symbol, orderId=order["orderId"])
-            print(f"✅ Canceled order {order['orderId']} for {symbol}")
-        except Exception as e:
-            print(f"❌ Could not cancel {symbol} order {order['orderId']}: {e}")
+async def get_balance_for_coin(client, asset: str) -> float:
+    """
+    Fetches the free balance for a specific asset.
+    """
+    balance = await client.get_asset_balance(asset)
+    return float(balance['free'])
 
-def get_price_filter(symbol: str, client) -> tuple:
-    info = client.get_symbol_info(symbol)
+async def wait_for_new_balance(client, asset, old_balance, timeout=30) -> float:
+    """
+    Waits for the balance of a specific asset to change.
+    """
+    start_time = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start_time < timeout:
+        new_balance = await get_balance_for_coin(client, asset)
+        if new_balance > old_balance:
+            print(f"✅ Balance for {asset} updated: {old_balance} -> {new_balance}")
+            return new_balance
+        await asyncio.sleep(1)  # Poll every 1 second
+
+    raise TimeoutError(f"❌ Timed out waiting for balance of {asset} to update.")
+
+# async def get_balances(client) -> list:
+#     print('Owned Coins Balances:')
+#     account_info = await client.get_account()
+#     balances = account_info['balances']
+#
+#     # Only show coins with nonzero balance
+#     nonzero = [b for b in balances if float(b['free']) > 0 or float(b['locked']) > 0]
+#
+#     for b in nonzero:
+#         print(f"{b['asset']}: Free={b['free']}, Locked={b['locked']}")
+#
+#     return nonzero
+
+# async def cancel_order(symbol: str, client) -> None:
+#     print(f'Canceled orders For Coin: {symbol}')
+#     open_orders = await client.get_open_orders(symbol=symbol)
+#
+#     if not open_orders:
+#         print('No open orders...')
+#         return
+#
+#     for order in open_orders:
+#         try:
+#             await client.cancel_order(symbol=symbol, orderId=order["orderId"])
+#             print(f"✅ Canceled order {order['orderId']} for {symbol}")
+#         except Exception as e:
+#             print(f"❌ Could not cancel {symbol} order {order['orderId']}: {e}")
+
+async def get_price_filter(symbol: str, client) -> tuple:
+    info = await client.get_symbol_info(symbol)
     for f in info['filters']:
         if f['filterType'] == 'PRICE_FILTER':
             return f['tickSize'], f['minPrice']
     return None, None
 
-def round_price(price: float, tick_size: float) -> Decimal:
+def round_price(price: float, tick_size) -> Decimal:
     tick_size = Decimal(tick_size)
     price = Decimal(str(price))
     rounded = (price // tick_size) * tick_size
     return rounded.quantize(tick_size, rounding=ROUND_DOWN)
 
-def get_lot_size_filter(symbol: str, client) -> tuple:
-    info = client.get_symbol_info(symbol)
+async def get_lot_size_filter(symbol: str, client) -> tuple:
+    info = await client.get_symbol_info(symbol)
     for f in info['filters']:
         if f['filterType'] == 'LOT_SIZE':
             return f['minQty'], f['maxQty'], f['stepSize']
@@ -57,7 +94,7 @@ def round_quantity(qty: float, step_size_str: float) -> Decimal:
     rounded = (qty // step_size) * step_size
     return rounded.quantize(step_size, rounding=ROUND_DOWN)
 
-def create_oco_stop_market_orders(balances: list, client, take_profit=2, drop_percent=2, limit_offset_percent=0.1) -> None:
+async def create_oco_order(new_balance, symbol: str, client, take_profit=2, drop_percent=2, limit_offset_percent=0.1) -> None:
     """
     Places STOP-LOSS-LIMIT sell orders for all assets.
 
@@ -66,72 +103,72 @@ def create_oco_stop_market_orders(balances: list, client, take_profit=2, drop_pe
     take_profit: how far above current price to trigger stop
     limit_offset_percent: how far below stop price to set the limit price (to help ensure fill)
     """
-    print('Placing OCO Orders:')
-    for asset in balances:
-        free_amount = float(asset["free"])
-        if free_amount > 0 and asset["asset"] != "USDT":
-            symbol = asset["asset"] + "USDT"
-            try:
-                # Get latest market price
-                ticker = client.get_symbol_ticker(symbol=symbol)
-                price = float(ticker["price"])
+    print(f'Placing OCO Order For Coin: {symbol}')
 
-                # Calculate stop price and limit price
-                tp_price = price * (1 + take_profit / 100)
-                sl_price = price * (1 - drop_percent / 100)
-                limit_price = tp_price * (1 - limit_offset_percent / 100)
+    if new_balance == 0:
+        return
 
-                # Get filters
-                tick_size_str, _ = get_price_filter(symbol, client)
-                min_qty_str, _, step_size_str = get_lot_size_filter(symbol, client)
+    try:
+        # Get latest market price
+        ticker = await client.get_symbol_ticker(symbol=symbol)
+        price = float(ticker["price"])
 
-                # adjust the prices and the free amount to binance requirements
-                if tick_size_str:
-                    tp_price_rounded = round_price(tp_price, tick_size_str)
-                    sl_price_rounded = round_price(sl_price, tick_size_str)
-                    limit_price_rounded = round_price(limit_price, tick_size_str)
-                else:
-                    tp_price_rounded = Decimal(str(tp_price))
-                    sl_price_rounded = Decimal(str(sl_price))
-                    limit_price_rounded = Decimal(str(limit_price))
+        # Calculate stop price and limit price
+        tp_price = price * (1 + take_profit / 100)
+        sl_price = price * (1 - drop_percent / 100)
+        limit_price = tp_price * (1 - limit_offset_percent / 100)
 
-                if step_size_str:
-                    quantity_rounded = round_quantity(free_amount, step_size_str)
-                else:
-                    quantity_rounded = Decimal(str(free_amount))
+        # Get filters
+        tick_size_str, _ = await get_price_filter(symbol, client)
+        min_qty_str, _, step_size_str = await get_lot_size_filter(symbol, client)
 
-                # Skip if quantity < minQty
-                if Decimal(quantity_rounded) < Decimal(min_qty_str):
-                    print(f"⏭ Skipping {symbol}, qty {quantity_rounded} < minQty {min_qty_str}")
-                    continue
+        # adjust the prices and the free amount to binance requirements
+        if tick_size_str:
+            tp_price_rounded = round_price(tp_price, tick_size_str)
+            sl_price_rounded = round_price(sl_price, tick_size_str)
+            limit_price_rounded = round_price(limit_price, tick_size_str)
+        else:
+            tp_price_rounded = Decimal(str(tp_price))
+            sl_price_rounded = Decimal(str(sl_price))
+            limit_price_rounded = Decimal(str(limit_price))
 
-                print(f"Placing OCO SELL for {symbol}: TP price={tp_price_rounded}, SL price={sl_price_rounded}, limit={limit_price_rounded}, qty={quantity_rounded}")
+        if step_size_str:
+            quantity_rounded = round_quantity(new_balance, step_size_str)
+        else:
+            quantity_rounded = Decimal(str(new_balance))
 
-                order = client.create_oco_order(
-                    symbol=symbol,
-                    side='SELL',
-                    quantity=quantity_rounded,
-                    # Take profit leg (limit)
-                    aboveType='TAKE_PROFIT_LIMIT',
-                    abovePrice=limit_price_rounded,
-                    aboveStopPrice=tp_price_rounded,
-                    aboveTimeInForce='GTC',
-                    # Stop-loss leg (stop-market)
-                    belowType='STOP_LOSS',
-                    belowStopPrice=sl_price_rounded
-                )
+        # Skip if quantity < minQty
+        if Decimal(quantity_rounded) < Decimal(min_qty_str):
+            print(f"⏭ Skipping {symbol}, qty {quantity_rounded} < minQty {min_qty_str}")
+            return
 
-                if 'orderListId' in order:
-                    print(f"OCO order placed successfully, order list ID: {order['orderListId']}")
-                    for o in order['orders']:
-                        print(f"Order ID: {o['orderId']} Symbol: {o['symbol']} ClientOrderId: {o['clientOrderId']}")
-                else:
-                    print("Failed to place OCO order, response:", order)
+        print(f"Placing OCO SELL for {symbol}: TP price={tp_price_rounded}, SL price={sl_price_rounded}, limit={limit_price_rounded}, qty={quantity_rounded}")
 
-            except Exception as e:
-                print(f"❌ Could not place stop-limit order for {symbol}: {e}")
+        order = await client.create_oco_order(
+            symbol=symbol,
+            side='SELL',
+            quantity=quantity_rounded,
+            # Take profit leg (limit)
+            aboveType='TAKE_PROFIT_LIMIT',
+            abovePrice=limit_price_rounded,
+            aboveStopPrice=tp_price_rounded,
+            aboveTimeInForce='GTC',
+            # Stop-loss leg (stop-market)
+            belowType='STOP_LOSS',
+            belowStopPrice=sl_price_rounded
+        )
 
-def buy_missing_whitelist_coins(balances: list, client) -> bool:
+        if 'orderListId' in order:
+            print(f"OCO order placed successfully, order list ID: {order['orderListId']}")
+            for o in order['orders']:
+                print(f"Order ID: {o['orderId']} Symbol: {o['symbol']} ClientOrderId: {o['clientOrderId']}")
+        else:
+            print("Failed to place OCO order, response:", order)
+
+    except Exception as e:
+        print(f"❌ Could not place stop-limit order for {symbol}: {e}")
+
+async def buy_coin(symbol: str, client):
     """
     Places limit buy orders for any coins on a predefined whitelist that the user does not currently own.
     It uses a portion of the available USDT to purchase each missing coin, ensuring the purchase
@@ -140,69 +177,46 @@ def buy_missing_whitelist_coins(balances: list, client) -> bool:
     balances: A list of asset balance dictionaries, typically from the Binance API.
     client: The python-binance client instance used to interact with the exchange.
     """
-    print('Placing Buy Missing Whitelist Coins:')
-    free_usdt = 0
+    print(f'Placing Buy Order For Coin: {symbol}')
 
-    for b in balances:
-        if b["asset"] == "USDT":
-            free_usdt = float(b["free"])
-            break
+    free_usdt = await get_balance_for_coin(client, 'USDT')
 
     if free_usdt < 5:
         print(f"Not enough USDT to buy missing coins (have {free_usdt} USDT).")
-        return False
+        return
 
-    # Find owned symbols from whitelist (asset + 'USDT' pair)
-    owned_symbols = [b["asset"] + 'USDT' for b in balances if float(b["locked"]) > 0 and b["asset"] != "USDT"]
+    # Get latest price for symbol
+    ticker = await client.get_symbol_ticker(symbol=symbol)
+    price = float(ticker['price'])
 
-    # Find missing whitelist coins (those not owned)
-    missing_symbols = [sym for sym in WHITELIST if sym not in owned_symbols]
+    # Calculate quantity to buy (budget / price)
+    quantity = free_usdt / price
 
-    if not missing_symbols:
-        print("You already own all whitelist coins.")
-        return False
+    # Round quantity according to lot size filter
+    _, _, step_size_str = await get_lot_size_filter(symbol, client)
+    if step_size_str:
+        quantity_rounded = round_quantity(quantity, step_size_str)
+    else:
+        quantity_rounded = Decimal(str(quantity))
 
-    # Divide free USDT across missing coins
-    per_coin_budget = free_usdt / len(missing_symbols)
-    print(f"Free USDT: {free_usdt}, Missing coins: {missing_symbols}, Budget per coin: {per_coin_budget}")
+    # Skip if quantity < minQty
+    min_qty_str, _, _ = await get_lot_size_filter(symbol, client)
+    if min_qty_str and quantity_rounded < Decimal(min_qty_str):
+        print(f"Skipping {symbol} because quantity {quantity_rounded} < minQty {min_qty_str}")
+        return
 
-    for symbol in missing_symbols:
-        if per_coin_budget < 5:
-            print(f"Can't buy coins, budget per coin is: {per_coin_budget}.\nThis is less than 5 USDT minimum.")
-            break
+    # Place limit buy order at current price (can tweak price if needed)
+    try:
+        print(f"Placing LIMIT BUY for {symbol} qty {quantity_rounded} at price {price}")
+        await client.create_order(
+            symbol=symbol,
+            side=SIDE_BUY,
+            type=ORDER_TYPE_LIMIT,
+            timeInForce=TIME_IN_FORCE_GTC,
+            price=price,
+            quantity=quantity_rounded
+        )
+    except Exception as e:
+        print(f"❌ Could not place limit buy for {symbol}: {e}")
 
-        # Get latest price for symbol
-        ticker = client.get_symbol_ticker(symbol=symbol)
-        price = float(ticker['price'])
-
-        # Calculate quantity to buy (budget / price)
-        quantity = per_coin_budget / price
-
-        # Round quantity according to lot size filter
-        _, _, step_size_str = get_lot_size_filter(symbol, client)
-        if step_size_str:
-            quantity_rounded = round_quantity(quantity, step_size_str)
-        else:
-            quantity_rounded = quantity
-
-        # Skip if quantity < minQty
-        min_qty_str, _, _ = get_lot_size_filter(symbol, client)
-        if min_qty_str and quantity_rounded < Decimal(min_qty_str):
-            print(f"Skipping {symbol} because quantity {quantity_rounded} < minQty {min_qty_str}")
-            continue
-
-        # Place limit buy order at current price (can tweak price if needed)
-        try:
-            print(f"Placing LIMIT BUY for {symbol} qty {quantity_rounded} at price {price}")
-            client.create_order(
-                symbol=symbol,
-                side=SIDE_BUY,
-                type=ORDER_TYPE_LIMIT,
-                timeInForce=TIME_IN_FORCE_GTC,
-                price=price,
-                quantity=quantity_rounded
-            )
-        except Exception as e:
-            print(f"❌ Could not place limit buy for {symbol}: {e}")
-
-    return True
+    return

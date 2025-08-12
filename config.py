@@ -1,6 +1,4 @@
-import os
+from os import getenv
 
-WHITELIST = ["LINKUSDT", "SOLUSDT", "ETHUSDT", "XRPUSDT", "ADAUSDT", "AVAXUSDT"]
-
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
+API_KEY = getenv('API_KEY')
+API_SECRET = getenv('API_SECRET')
