@@ -5,7 +5,13 @@ import asyncio
 # entry point from main script
 async def handle_message(msg, client) -> None:
     if msg.get("e") == "executionReport" and msg.get("S") == "SELL" and msg.get("X") == "FILLED":
+
         symbol = msg.get("s")
+
+        if msg.get("o") == 'STOP_MARKET':
+            print(f'Stop Loss Market Order. Stoping trade form {symbol}')
+            return
+
         asset = symbol.replace('USDT', '')
         print(f"Sell detected for {symbol} – triggering re-buy logic")
 
@@ -71,7 +77,7 @@ def round_quantity(qty: float, step_size_str: float) -> Decimal:
     return rounded.quantize(step_size, rounding=ROUND_DOWN)
 
 async def create_oco_order(new_balance: float, symbol: str, client,
-                           take_profit=2, drop_percent=2, limit_offset_percent=0.1) -> None:
+                           take_profit=2, drop_percent=4, limit_offset_percent=0.1) -> None:
     """
     Places STOP-LOSS-LIMIT sell orders for all assets.
 
