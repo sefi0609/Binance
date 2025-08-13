@@ -30,7 +30,7 @@ async def get_balance_for_coin(client, asset: str) -> float:
     balance = await client.get_asset_balance(asset)
     return float(balance['free'])
 
-async def wait_for_new_balance(client, asset: str, old_balance: float, timeout=300) -> float:
+async def wait_for_new_balance(client, asset: str, old_balance: float, timeout=240) -> float:
     """
     Waits for the balance of a specific asset to change.
     """
@@ -145,7 +145,7 @@ async def create_oco_order(new_balance: float, symbol: str, client,
     except Exception as e:
         print(f"❌ Could not place stop-limit order for {symbol}: {e}")
 
-async def buy_coin(symbol: str, client) -> None:
+async def buy_coin(symbol: str, client, limit_offset_percent=0.1) -> None:
     """
     Places limit buy orders for any coins on a predefined whitelist that the user does not currently own.
     It uses a portion of the available USDT to purchase each missing coin, ensuring the purchase
@@ -153,6 +153,7 @@ async def buy_coin(symbol: str, client) -> None:
 
     balances: A list of asset balance dictionaries, typically from the Binance API.
     client: The python-binance client instance used to interact with the exchange.
+    limit_offset_percent: how far above price to set the limit price (to help ensure fill)
     """
     print(f'Placing Buy Order For Coin: {symbol}')
 
@@ -165,9 +166,10 @@ async def buy_coin(symbol: str, client) -> None:
     # Get latest price for symbol
     ticker = await client.get_symbol_ticker(symbol=symbol)
     price = float(ticker['price'])
+    limit_price = price * (1 + limit_offset_percent / 100)
 
     # Calculate quantity to buy (budget / price)
-    quantity = free_usdt / price
+    quantity = free_usdt / limit_price
 
     # Round quantity according to lot size filter
     _, _, step_size_str = await get_lot_size_filter(symbol, client)
@@ -184,13 +186,13 @@ async def buy_coin(symbol: str, client) -> None:
 
     # Place limit buy order at current price (can tweak price if needed)
     try:
-        print(f"Placing LIMIT BUY for {symbol} qty {quantity_rounded} at price {price}")
+        print(f"Placing LIMIT BUY for {symbol} qty {quantity_rounded} at price {limit_price}")
         await client.create_order(
             symbol=symbol,
             side=SIDE_BUY,
             type=ORDER_TYPE_LIMIT,
             timeInForce=TIME_IN_FORCE_GTC,
-            price=price,
+            price=limit_price,
             quantity=quantity_rounded
         )
     except Exception as e:
