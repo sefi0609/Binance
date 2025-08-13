@@ -179,6 +179,13 @@ async def buy_coin(symbol: str, client, limit_offset_percent=0.1) -> None:
 
     # Round quantity according to lot size filter
     _, _, step_size_str = await get_lot_size_filter(symbol, client)
+    tick_size_str, _ = await get_price_filter(symbol, client)
+
+    if tick_size_str:
+        limit_price_rounded = round_price(limit_price, tick_size_str)
+    else:
+        limit_price_rounded = Decimal(str(limit_price))
+
     if step_size_str:
         quantity_rounded = round_quantity(quantity, step_size_str)
     else:
@@ -192,13 +199,13 @@ async def buy_coin(symbol: str, client, limit_offset_percent=0.1) -> None:
 
     # Place limit buy order at current price (can tweak price if needed)
     try:
-        print(f"Placing LIMIT BUY for {symbol} qty {quantity_rounded} at price {limit_price}")
+        print(f"Placing LIMIT BUY for {symbol} qty {quantity_rounded} at price {limit_price_rounded}")
         await client.create_order(
             symbol=symbol,
             side=SIDE_BUY,
             type=ORDER_TYPE_LIMIT,
             timeInForce=TIME_IN_FORCE_GTC,
-            price=limit_price,
+            price=limit_price_rounded,
             quantity=quantity_rounded
         )
     except Exception as e:
